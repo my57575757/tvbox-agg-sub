@@ -1,0 +1,64 @@
+name: aggregate
+
+on:
+  schedule:
+    - cron: '17 16 * * *'  # 北京时间每天 00:17
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aggregate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch seed multi-repo list
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -A "Mozilla/5.0 (Linux; Android 12) TVBox" \
+            "https://ofind.cn/juhe-subhub/merged.json" -o seed.json
+          python -c "import json;d=json.load(open('seed.json'));print('seed repos:',len(d['urls']))"
+
+      - name: Recursively aggregate
+        run: python aggregate.py seed.json aggregate.json stats.txt
+
+      - name: Validate output
+        run: |
+          python - <<'PY'
+          import json
+          d = json.load(open('aggregate.json', encoding='utf-8'))
+          n = len(d.get('sites', []))
+          assert n > 100, f'too few sites: {n}'
+          print('sites:', n, 'parses:', len(d.get('parses', [])), 'lives:', len(d.get('lives', [])))
+          PY
+
+      - name: Commit aggregate.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add aggregate.json
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "chore: daily aggregate $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Upload stats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats
+          path: stats.txt
+          retention-days: 14
